@@ -36,11 +36,10 @@ def merge(word_counts: dict[tuple[bytes, ...], int], pair: tuple[bytes, ...]) ->
             else:
                 merged_word.append(word[i])
                 i += 1
-        
-        merged_counts[tuple(merged_word)] += count
-    
-    return merged_counts
 
+        merged_counts[tuple(merged_word)] += count
+
+    return merged_counts
 
 
 def main():
@@ -59,7 +58,7 @@ def main():
 
         word_counts = merge(word_counts, best)
         print(word_counts)
-    
+
     print(vocab)
 
 
