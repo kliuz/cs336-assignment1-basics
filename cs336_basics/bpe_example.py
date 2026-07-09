@@ -1,12 +1,12 @@
-import collections
+from collections import defaultdict
 
 
 def pre_tokenize(corpus: str) -> list[str]:
     return corpus.split()
 
 
-def get_word_counts(words: list[str]) -> dict[tuple[bytes, ...], int]:
-    counts: dict[tuple[bytes, ...], int] = collections.defaultdict(int)
+def get_word_counts(words: list[str]) -> dict[tuple[bytes, ...], int] -> dict[tuple[bytes, ...], int]:
+    counts: dict[tuple[bytes, ...], int] = defaultdict(int)
     for word in words:
         key = tuple(bytes([b]) for b in bytes(word, "utf-8"))
         counts[key] += 1
@@ -14,8 +14,8 @@ def get_word_counts(words: list[str]) -> dict[tuple[bytes, ...], int]:
     return counts
 
 
-def get_pair_stats(word_counts: dict[tuple[bytes, ...], int]):
-    counts: dict[tuple[bytes, ...], int] = collections.defaultdict(int)
+def get_pair_stats(word_counts: dict[tuple[bytes, ...], int]) -> dict[tuple[bytes, bytes], int]:
+    counts: dict[tuple[bytes, bytes], int] = defaultdict(int)
     for word, count in word_counts.items():
         # Explicitly ignoring one-character words.
         for i in range(len(word) - 1):
@@ -25,7 +25,7 @@ def get_pair_stats(word_counts: dict[tuple[bytes, ...], int]):
 
 
 def merge(word_counts: dict[tuple[bytes, ...], int], pair: tuple[bytes, ...]) -> dict[tuple[bytes, ...], int]:
-    merged_counts: dict[tuple[bytes, ...], int] = collections.defaultdict(int)
+    merged_counts: dict[tuple[bytes, ...], int] = defaultdict(int)
     for word, count in word_counts.items():
         merged_word: list[bytes] = []
         i = 0
