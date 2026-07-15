@@ -1,9 +1,13 @@
 import heapq
+import os
+import random
+import string
 from collections import Counter, defaultdict
 from multiprocessing import Pool
 
 import regex as re
-from pretokenization_example import find_chunk_boundaries
+
+from cs336_basics.pretokenization_example import find_chunk_boundaries
 
 
 class Node:
@@ -11,9 +15,10 @@ class Node:
         self.value = value
         self.freq = freq
         self.next: Node | None = None
+        self.prev: Node | None = None
 
 
-class LinkedList:
+class DoublyLinkedList:
     def __init__(self):
         self.head: Node | None = None
 
@@ -26,6 +31,19 @@ class LinkedList:
         while curr.next:
             curr = curr.next
         curr.next = node
+        node.prev = curr
+
+
+class MaxHeapItem:
+    def __init__(self, count: int, byte_pair: tuple[bytes, bytes]):
+        self.count = count
+        self.byte_pair = byte_pair
+
+    def __lt__(self, other: "MaxHeapItem"):
+        return (self.count, self.byte_pair) > (other.count, other.byte_pair)
+
+    def __repr__(self):
+        return f"({self.count}, [{self.byte_pair[0]}, {self.byte_pair[1]}])"
 
 
 def pre_tokenize(chunk: str) -> Counter:
@@ -35,7 +53,24 @@ def pre_tokenize(chunk: str) -> Counter:
     return Counter(matches)
 
 
-def get_pre_token_counts(input_path: str, special_tokens: list[str]) -> dict[tuple[bytes, ...], int]:
+def get_pre_token_counts_debug(text: str, special_tokens: list[str]) -> dict[tuple[bytes, ...], int]:
+    pre_token_counts = Counter()
+    escaped_special_tokens = [re.escape(token) for token in special_tokens]
+
+    chunks = re.split("|".join(escaped_special_tokens), text)
+    for chunk in chunks:
+        counters = pre_tokenize(chunk)
+        pre_token_counts += counters
+
+    bytes_counts = defaultdict(int)
+    for pre_token, count in pre_token_counts.items():
+        key = tuple(bytes([b]) for b in pre_token.encode("utf-8"))
+        bytes_counts[key] = count
+
+    return bytes_counts
+
+
+def get_pre_token_counts(input_path: str | os.PathLike, special_tokens: list[str]) -> dict[tuple[bytes, ...], int]:
     pre_token_counts = Counter()
     with open(input_path, "rb") as f:
         num_processes = 16
@@ -61,23 +96,23 @@ def get_pre_token_counts(input_path: str, special_tokens: list[str]) -> dict[tup
     return bytes_counts
 
 
-def get_byte_pairs_to_nodes(pre_token_counts: dict[tuple[bytes, ...], int]) -> dict[tuple[bytes, bytes], set[Node]]:
-    pre_token_nodes: dict[tuple[bytes, bytes], set[Node]] = defaultdict(set)
+def get_byte_pairs_to_nodes(pre_token_counts: dict[tuple[bytes, ...], int]) -> dict[tuple[bytes, bytes], list[Node]]:
+    pre_token_nodes: dict[tuple[bytes, bytes], list[Node]] = defaultdict(list)
     for pre_token, count in pre_token_counts.items():
-        ll = LinkedList()
+        ll = DoublyLinkedList()
         for b in pre_token:
             ll.append(Node(b, count))
 
         node = ll.head
         while node is not None and node.next is not None:
-            pre_token_nodes[(node.value, node.next.value)].add(node)
+            pre_token_nodes[(node.value, node.next.value)].append(node)
             node = node.next
 
     return pre_token_nodes
 
 
 def get_byte_pairs_to_counts(
-    byte_pairs_to_nodes: dict[tuple[bytes, bytes], set[Node]],
+    byte_pairs_to_nodes: dict[tuple[bytes, bytes], list[Node]],
 ) -> dict[tuple[bytes, bytes], int]:
     byte_pairs_to_counts: dict[tuple[bytes, bytes], int] = defaultdict(int)
     for pair, nodes in byte_pairs_to_nodes.items():
@@ -86,27 +121,169 @@ def get_byte_pairs_to_counts(
     return byte_pairs_to_counts
 
 
-def get_byte_pairs_max_heap(byte_pairs_to_counts: dict[tuple[bytes, bytes], int]) -> list:
-    max_pq = [(-count, byte_pair) for byte_pair, count in byte_pairs_to_counts.items()]
+def get_byte_pairs_max_heap(byte_pairs_to_counts: dict[tuple[bytes, bytes], int]) -> list[MaxHeapItem]:
+    max_pq = [MaxHeapItem(count, byte_pair) for byte_pair, count in byte_pairs_to_counts.items()]
     heapq.heapify(max_pq)
     return max_pq
 
 
-def merge_pre_token_nodes(node: Node | None, pair: tuple[bytes, bytes]) -> tuple[Node | None, Node | None, int]:
+def merge_pre_token_nodes(node: Node | None) -> tuple[Node | None, Node | None, int]:
     if node is None or node.next is None:
         return (None, None, 0)
 
-    node.value = pair[0] + pair[1]
+    node.value = node.value + node.next.value
     removed = node.next
     next = removed.next
+    if next is not None:
+        next.prev = node
     removed.next = None
     node.next = next
 
     return (node, removed, node.freq)
 
 
+class OptimizedBPE:
+    def __init__(self, pre_token_counts: dict[tuple[bytes, ...], int], vocab_size: int, special_tokens: list[str]):
+        self.pre_token_counts = pre_token_counts
+        self.vocab_size = vocab_size
+        self.special_tokens = special_tokens
+        self.vocab: dict[int, bytes] = {x: bytes([x]) for x in range(256)}
+        for token in special_tokens:
+            self.vocab[len(self.vocab)] = token.encode("utf-8")
+        self.merges: list[tuple[bytes, bytes]] = []
+        self.byte_pairs_to_nodes: dict[tuple[bytes, bytes], list[Node]] = get_byte_pairs_to_nodes(self.pre_token_counts)
+        self.byte_pairs_to_counts = get_byte_pairs_to_counts(self.byte_pairs_to_nodes)
+        self.max_pq = get_byte_pairs_max_heap(self.byte_pairs_to_counts)
+
+    def _print_node(self, node: Node) -> None:
+        value = node.value
+        prev_value = None if not node.prev else node.prev.value
+        next_value = None if not node.next else node.next.value
+
+        print("(prev, curr, next):", prev_value, value, next_value)
+
+    def train(self) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+        while len(self.vocab) < self.vocab_size and len(self.max_pq) > 0:
+            prev_vocab_size = len(self.vocab)
+            item: MaxHeapItem = heapq.heappop(self.max_pq)
+            heap_count = item.count
+            byte_pair = item.byte_pair
+            true_count = self.byte_pairs_to_counts[byte_pair]
+            # print(byte_pair)
+            # print(self.byte_pairs_to_counts)
+            assert true_count >= 0
+
+            if true_count == 0:
+                continue
+            elif heap_count != true_count:
+                heapq.heappush(self.max_pq, MaxHeapItem(true_count, byte_pair))
+                continue
+
+            self.merges.append(byte_pair)
+            # print("== APPENDED:", byte_pair)
+            merged_pair: bytes = byte_pair[0] + byte_pair[1]
+            self.vocab[len(self.vocab)] = merged_pair
+
+            removed_nodes: set[Node] = set()
+            # print("processing nodes:", self.byte_pairs_to_nodes[byte_pair])
+            for node in self.byte_pairs_to_nodes[byte_pair]:
+                # print("loop")
+                # self._print_node(node)
+                if not node or node in removed_nodes or node.next is None:
+                    continue
+
+                # check to make sure that the node still matches our current merge
+                if node.value != byte_pair[0] or node.next.value != byte_pair[1]:
+                    continue
+
+                merged_node, removed_node, count = merge_pre_token_nodes(node)
+
+                # todo: do we still need this check?
+                if merged_node is None or removed_node is None:
+                    continue
+                removed_nodes.add(removed_node)
+
+                node_before = merged_node.prev
+                node_after = merged_node.next
+                if node_before is not None:
+                    old_byte_pair = (node_before.value, byte_pair[0])
+                    if old_byte_pair in self.byte_pairs_to_counts:
+                        self.byte_pairs_to_counts[old_byte_pair] -= count
+                    new_byte_pair = (node_before.value, merged_pair)
+                    self.byte_pairs_to_counts[new_byte_pair] += count
+                    self.byte_pairs_to_nodes[new_byte_pair].append(node_before)
+                    # print("<=adding pair before:", new_byte_pair)
+                    # self._print_node(node_before)
+                    # print("=>")
+                    heapq.heappush(self.max_pq, MaxHeapItem(self.byte_pairs_to_counts[new_byte_pair], new_byte_pair))
+                if node_after is not None:
+                    old_byte_pair = (byte_pair[1], node_after.value)
+                    if old_byte_pair in self.byte_pairs_to_counts:
+                        self.byte_pairs_to_counts[old_byte_pair] -= count
+                    new_byte_pair = (merged_pair, node_after.value)
+                    self.byte_pairs_to_counts[new_byte_pair] += count
+                    self.byte_pairs_to_nodes[new_byte_pair].append(merged_node)
+                    # print("<=adding pair after:", new_byte_pair)
+                    # self._print_node(merged_node)
+                    # print("=>")
+                    heapq.heappush(self.max_pq, MaxHeapItem(self.byte_pairs_to_counts[new_byte_pair], new_byte_pair))
+            self.byte_pairs_to_counts.pop(byte_pair)
+            self.byte_pairs_to_nodes.pop(byte_pair)
+
+            # print(self.byte_pairs_to_counts)
+            assert len(self.vocab) == prev_vocab_size + 1
+
+        return self.vocab, self.merges
+
+
+class UnoptimizedBPE:
+    def __init__(self, pre_token_counts: dict[tuple[bytes, ...], int], vocab_size: int, special_tokens: list[str]):
+        self.pre_token_counts = pre_token_counts
+        self.vocab_size = vocab_size
+        self.special_tokens = special_tokens
+        self.vocab: dict[int, bytes] = {x: bytes([x]) for x in range(256)}
+        for token in special_tokens:
+            self.vocab[len(self.vocab)] = token.encode("utf-8")
+        self.merges: list[tuple[bytes, bytes]] = []
+
+    def get_pair_stats(self) -> dict[tuple[bytes, bytes], int]:
+        counts: dict[tuple[bytes, bytes], int] = defaultdict(int)
+        for pre_token, count in self.pre_token_counts.items():
+            # Explicitly ignoring one-character words.
+            for i in range(len(pre_token) - 1):
+                counts[(pre_token[i], pre_token[i + 1])] += count
+
+        return counts
+
+    def train(self):
+        while len(self.vocab) < self.vocab_size and len(self.pre_token_counts) > 0:
+            pair_stats = self.get_pair_stats()
+            if not pair_stats:
+                break
+            best_pair = max(pair_stats, key=lambda p: (pair_stats.get(p, 0), p))
+            self.merges.append(best_pair)
+            self.vocab[len(self.vocab)] = best_pair[0] + best_pair[1]
+
+            merged_counts: dict[tuple[bytes, ...], int] = defaultdict(int)
+            for pre_token, count in self.pre_token_counts.items():
+                merged_word: list[bytes] = []
+                i = 0
+                while i < len(pre_token):
+                    if i + 1 < len(pre_token) and (pre_token[i], pre_token[i + 1]) == best_pair:
+                        merged_word.append(pre_token[i] + pre_token[i + 1])
+                        i += 2
+                    else:
+                        merged_word.append(pre_token[i])
+                        i += 1
+
+                merged_counts[tuple(merged_word)] += count
+            self.pre_token_counts = merged_counts
+
+        return self.vocab, self.merges
+
+
 def train_bpe(
-    input_path: str, vocab_size: int, special_tokens: list[str]
+    input_path: str | os.PathLike, vocab_size: int, special_tokens: list[str]
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     """
     input_path: Path to a text file with BPE tokenizer training data.
@@ -116,20 +293,52 @@ def train_bpe(
         boundaries that prevent merges across their spans, but do not include them when computing
         merge statistics.
     """
-    vocab: dict[int, bytes] = {}
-    merges: list[tuple[bytes, bytes]] = []
-
-    pre_token_counts = get_pre_token_counts(input_path, special_tokens)
-    byte_pairs_to_nodes = get_byte_pairs_to_nodes(pre_token_counts)
-    byte_pairs_to_counts = get_byte_pairs_to_counts(byte_pairs_to_nodes)
-    max_pq = get_byte_pairs_max_heap(byte_pairs_to_counts)
-
-    # after calling merge_pre_token_nodes, we need to delete the entries for `node` and `removed`
-    # for the current max pair as well as all subsequent pair, and create a new entry for the
-    # merged pair + subsequent byte.
+    pre_token_counts = get_pre_token_counts(input_path, special_tokens=["<|endoftext|>"])
+    bpe = OptimizedBPE(pre_token_counts, vocab_size, special_tokens)
+    vocab, merges = bpe.train()
 
     return vocab, merges
 
 
+def fuzz_implementations(alphabet: str, text_len: int, vocab_size: int, special_tokens: list[str]):
+    while True:
+        text = "".join(random.choices(alphabet, k=text_len)) + "<|endoftext|>"
+
+        header = "================ text: " + text + " ================"
+        print(header)
+        pre_token_counts = get_pre_token_counts_debug(text, special_tokens)
+        bpe_opt = OptimizedBPE(pre_token_counts, vocab_size, special_tokens)
+        bpe_unopt = UnoptimizedBPE(pre_token_counts, vocab_size, special_tokens)
+
+        vocab_opt, merges_opt = bpe_opt.train()
+        vocab_unopt, merges_unopt = bpe_unopt.train()
+
+        if merges_opt != merges_unopt:
+            print("merges_opt", merges_opt)
+            print("merges_unopt", merges_unopt)
+            break
+
+        print("=" * len(header))
+
+
+def debug_specific_example(text: str, vocab_size: int, special_tokens: list[str]):
+    header = "================ text: " + text + " ================"
+    print(header)
+    pre_token_counts = get_pre_token_counts_debug(text, special_tokens)
+    bpe_opt = OptimizedBPE(pre_token_counts, vocab_size, special_tokens)
+    bpe_unopt = UnoptimizedBPE(pre_token_counts, vocab_size, special_tokens)
+
+    vocab_opt, merges_opt = bpe_opt.train()
+    vocab_unopt, merges_unopt = bpe_unopt.train()
+
+    if merges_opt != merges_unopt:
+        print("merges_opt", merges_opt)
+        print("merges_unopt", merges_unopt)
+    print("=" * len(header))
+
+
 if __name__ == "__main__":
-    train_bpe(input_path="data/TinyStoriesV2-GPT4-valid.txt", vocab_size=500, special_tokens=["<|endoftext|>"])
+    # pre_token_counts = get_pre_token_counts(input_path="data/test.txt", special_tokens=["<|endoftext|>"])
+
+    # debug_specific_example(text="bababbab", vocab_size=257 + 4, special_tokens=["<|endoftext|>"])
+    fuzz_implementations(alphabet="ab", text_len=8, vocab_size=257 + 4, special_tokens=["<|endoftext|>"])

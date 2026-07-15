@@ -5,7 +5,7 @@ def pre_tokenize(corpus: str) -> list[str]:
     return corpus.split()
 
 
-def get_word_counts(words: list[str]) -> dict[tuple[bytes, ...], int] -> dict[tuple[bytes, ...], int]:
+def get_word_counts(words: list[str]) -> dict[tuple[bytes, ...], int]:
     counts: dict[tuple[bytes, ...], int] = defaultdict(int)
     for word in words:
         key = tuple(bytes([b]) for b in bytes(word, "utf-8"))
@@ -45,7 +45,7 @@ def merge(word_counts: dict[tuple[bytes, ...], int], pair: tuple[bytes, ...]) ->
 def main():
     corpus = "low low low low low lower lower widest widest widest newest newest newest newest newest newest"
     vocab: dict[int, bytes] = {x: bytes([x]) for x in range(256)}
-    vocab[len(vocab) + 1] = bytes("<|endoftext|>", "utf-8")
+    vocab[len(vocab)] = bytes("<|endoftext|>", "utf-8")
 
     words = pre_tokenize(corpus)
     word_counts = get_word_counts(words)
@@ -54,12 +54,13 @@ def main():
     for i in range(merges):
         pair_stats = get_pair_stats(word_counts)
         best = max(pair_stats, key=lambda p: (pair_stats.get(p, (0)), p))
+        print((best[0], best[1]))
         vocab[len(vocab) + 1] = best[0] + best[1]
 
         word_counts = merge(word_counts, best)
-        print(word_counts)
+        # print(word_counts)
 
-    print(vocab)
+    # print(vocab)
 
 
 if __name__ == "__main__":
