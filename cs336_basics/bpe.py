@@ -1,4 +1,5 @@
 import heapq
+import json
 import os
 import random
 from collections import Counter, defaultdict
@@ -104,7 +105,9 @@ class OptimizedBPE:
         for token in special_tokens:
             self.vocab[len(self.vocab)] = token.encode("utf-8")
         self.merges: list[tuple[bytes, bytes]] = []
-        self.byte_pairs_to_nodes: dict[tuple[bytes, bytes], list[Node]] = self._get_byte_pairs_to_nodes(self.pre_token_counts)
+        self.byte_pairs_to_nodes: dict[tuple[bytes, bytes], list[Node]] = self._get_byte_pairs_to_nodes(
+            self.pre_token_counts
+        )
         self.byte_pairs_to_counts = self._get_byte_pairs_to_counts(self.byte_pairs_to_nodes)
         self.max_pq = self._get_byte_pairs_max_heap(self.byte_pairs_to_counts)
 
@@ -159,7 +162,6 @@ class OptimizedBPE:
         next_value = None if not node.next else node.next.value
 
         print("(prev, curr, next):", prev_value, value, next_value)
-
 
     def train(self) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
         while len(self.vocab) < self.vocab_size and len(self.max_pq) > 0:
@@ -313,9 +315,32 @@ def debug_specific_example(text: str, vocab_size: int, special_tokens: list[str]
     print("=" * len(header))
 
 
+def serialize_vocab_and_merges(bpe: OptimizedBPE, vocab_path: str, merge_path: str):
+    vocab: dict[int, str] = {}
+    merges: list[tuple[str, str]] = []
+
+    for k, v in bpe.vocab.items():
+        vocab[k] = v.decode("latin-1")
+    for v in bpe.merges:
+        merges.append((v[0].decode("latin-1"), v[1].decode("latin-1")))
+
+    with open(vocab_path, "w") as f:
+        json.dump(vocab, f)
+    with open(merge_path, "w") as f:
+        json.dump(merges, f)
+
+
 if __name__ == "__main__":
     # debug_specific_example(text="bababbab", vocab_size=257 + 4, special_tokens=["<|endoftext|>"])
     # fuzz_implementations(alphabet="ab", text_len=8, vocab_size=257 + 4, special_tokens=["<|endoftext|>"])
 
-    pre_token_counts = get_pre_token_counts(input_path="data/TinyStoriesV2-GPT4-valid.txt", special_tokens=["<|endoftext|>"])
-    bpe = UnoptimizedBPE(pre_token_counts, vocab_size=10000, special_tokens=["<|endoftext|>"])
+    pre_token_counts = get_pre_token_counts(
+        input_path="data/TinyStoriesV2-GPT4-valid.txt", special_tokens=["<|endoftext|>"]
+    )
+    bpe = OptimizedBPE(pre_token_counts, vocab_size=10000, special_tokens=["<|endoftext|>"])
+    bpe.train()
+    serialize_vocab_and_merges(
+        bpe,
+        vocab_path="outputs/TinyStoriesV2-GPT4-valid_vocab.json",
+        merge_path="outputs/TinyStoriesV2-GPT4-valid_merges.json",
+    )
