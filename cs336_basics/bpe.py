@@ -69,12 +69,16 @@ def get_pre_token_counts_debug(text: str, special_tokens: list[str]) -> dict[tup
 
     return bytes_counts
 
-def pre_tokenize(chunk, escaped_special_tokens) -> Counter:
+def pre_tokenize(input_path: str, start: int, end: int, escaped_special_tokens) -> Counter:
     pat_str = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
-    subchunks: list[str] = re.split("|".join(escaped_special_tokens), chunk)
-    matches: list[str] = []
+    subchunks: list[str] = []
+    with open(input_path, "rb") as f:
+        f.seek(start)
+        chunk = f.read(end - start).decode("utf-8", errors="ignore")
+        subchunks = re.split("|".join(escaped_special_tokens), chunk)
 
+    matches: list[str] = []
     for subchunk in subchunks:
         matches += [match.group(0) for match in re.finditer(pat_str, subchunk)]
 
@@ -82,19 +86,15 @@ def pre_tokenize(chunk, escaped_special_tokens) -> Counter:
 
 def get_pre_token_counts(input_path: str | os.PathLike, special_tokens: list[str]) -> dict[tuple[bytes, ...], int]:
     pre_token_counts = Counter()
-    chunks: list[str] = []
+    boundaries: list[int] = []
     with open(input_path, "rb") as f:
         num_processes = 16
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
-        for start, end in zip(boundaries[:-1], boundaries[1:]):
-            f.seek(start)
-            chunk = f.read(end - start).decode("utf-8", errors="ignore")
-            chunks.append(chunk)
  
     # Parallelize by sending each start/end pair to a set of processes.
     escaped_special_tokens = [re.escape(token) for token in special_tokens]
     with Pool(processes=16) as pool:
-        arguments = [(chunk, escaped_special_tokens) for chunk in chunks]
+        arguments = [(input_path, start, end, escaped_special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:])]
         counters = pool.starmap(pre_tokenize, arguments)
         merged_counters = sum(counters, start=Counter())
         pre_token_counts += merged_counters
