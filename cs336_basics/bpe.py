@@ -46,7 +46,7 @@ class MaxHeapItem:
         return f"({self.count}, [{self.byte_pair[0]}, {self.byte_pair[1]}])"
 
 
-def pre_tokenize(chunk: str) -> Counter:
+def pre_tokenize_debug(chunk: str) -> Counter:
     pat_str = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
     matches = [match.group(0) for match in re.finditer(pat_str, chunk)]
 
@@ -59,7 +59,7 @@ def get_pre_token_counts_debug(text: str, special_tokens: list[str]) -> dict[tup
 
     chunks = re.split("|".join(escaped_special_tokens), text)
     for chunk in chunks:
-        counters = pre_tokenize(chunk)
+        counters = pre_tokenize_debug(chunk)
         pre_token_counts += counters
 
     bytes_counts = defaultdict(int)
@@ -69,24 +69,35 @@ def get_pre_token_counts_debug(text: str, special_tokens: list[str]) -> dict[tup
 
     return bytes_counts
 
+def pre_tokenize(chunk, escaped_special_tokens) -> Counter:
+    pat_str = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+
+    subchunks: list[str] = re.split("|".join(escaped_special_tokens), chunk)
+    matches: list[str] = []
+
+    for subchunk in subchunks:
+        matches += [match.group(0) for match in re.finditer(pat_str, subchunk)]
+
+    return Counter(matches)
 
 def get_pre_token_counts(input_path: str | os.PathLike, special_tokens: list[str]) -> dict[tuple[bytes, ...], int]:
     pre_token_counts = Counter()
+    chunks: list[str] = []
     with open(input_path, "rb") as f:
         num_processes = 16
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
-
-        # Parallelize by sending each start/end pair to a set of processes.
-        escaped_special_tokens = [re.escape(token) for token in special_tokens]
-        with Pool(processes=16) as pool:
-            for start, end in zip(boundaries[:-1], boundaries[1:]):
-                f.seek(start)
-                chunk = f.read(end - start).decode("utf-8", errors="ignore")
-                sub_chunks = re.split("|".join(escaped_special_tokens), chunk)
-
-                counters = pool.map(pre_tokenize, sub_chunks)
-                merged_counters = sum(counters, start=Counter())
-                pre_token_counts += merged_counters
+        for start, end in zip(boundaries[:-1], boundaries[1:]):
+            f.seek(start)
+            chunk = f.read(end - start).decode("utf-8", errors="ignore")
+            chunks.append(chunk)
+ 
+    # Parallelize by sending each start/end pair to a set of processes.
+    escaped_special_tokens = [re.escape(token) for token in special_tokens]
+    with Pool(processes=16) as pool:
+        arguments = [(chunk, escaped_special_tokens) for chunk in chunks]
+        counters = pool.starmap(pre_tokenize, arguments)
+        merged_counters = sum(counters, start=Counter())
+        pre_token_counts += merged_counters
 
     bytes_counts = defaultdict(int)
     for pre_token, count in pre_token_counts.items():
@@ -339,8 +350,8 @@ if __name__ == "__main__":
     )
     bpe = OptimizedBPE(pre_token_counts, vocab_size=10000, special_tokens=["<|endoftext|>"])
     bpe.train()
-    serialize_vocab_and_merges(
-        bpe,
-        vocab_path="outputs/TinyStoriesV2-GPT4-valid_vocab.json",
-        merge_path="outputs/TinyStoriesV2-GPT4-valid_merges.json",
-    )
+    # serialize_vocab_and_merges(
+    #     bpe,
+    #     vocab_path="outputs/TinyStoriesV2-GPT4-train_vocab.json",
+    #     merge_path="outputs/TinyStoriesV2-GPT4-train_merges.json",
+    # )
