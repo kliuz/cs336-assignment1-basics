@@ -69,6 +69,7 @@ def get_pre_token_counts_debug(text: str, special_tokens: list[str]) -> dict[tup
 
     return bytes_counts
 
+
 def pre_tokenize(input_path: str, start: int, end: int, escaped_special_tokens) -> Counter:
     pat_str = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
@@ -78,11 +79,13 @@ def pre_tokenize(input_path: str, start: int, end: int, escaped_special_tokens) 
         chunk = f.read(end - start).decode("utf-8", errors="ignore")
         subchunks = re.split("|".join(escaped_special_tokens), chunk)
 
-    matches: list[str] = []
+    counter: Counter = Counter()
     for subchunk in subchunks:
-        matches += [match.group(0) for match in re.finditer(pat_str, subchunk)]
+        for match in re.finditer(pat_str, subchunk):
+            counter[match.group(0)] += 1
 
-    return Counter(matches)
+    return counter
+
 
 def get_pre_token_counts(input_path: str | os.PathLike, special_tokens: list[str]) -> dict[tuple[bytes, ...], int]:
     pre_token_counts = Counter()
@@ -90,11 +93,13 @@ def get_pre_token_counts(input_path: str | os.PathLike, special_tokens: list[str
     with open(input_path, "rb") as f:
         num_processes = 16
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
- 
+
     # Parallelize by sending each start/end pair to a set of processes.
     escaped_special_tokens = [re.escape(token) for token in special_tokens]
     with Pool(processes=16) as pool:
-        arguments = [(input_path, start, end, escaped_special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:])]
+        arguments = [
+            (input_path, start, end, escaped_special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:])
+        ]
         counters = pool.starmap(pre_tokenize, arguments)
         merged_counters = sum(counters, start=Counter())
         pre_token_counts += merged_counters
@@ -345,13 +350,17 @@ if __name__ == "__main__":
     # debug_specific_example(text="bababbab", vocab_size=257 + 4, special_tokens=["<|endoftext|>"])
     # fuzz_implementations(alphabet="ab", text_len=8, vocab_size=257 + 4, special_tokens=["<|endoftext|>"])
 
+    print("Starting BPE training!")
     pre_token_counts = get_pre_token_counts(
-        input_path="data/TinyStoriesV2-GPT4-valid.txt", special_tokens=["<|endoftext|>"]
+        input_path="data/TinyStoriesV2-GPT4-train.txt", special_tokens=["<|endoftext|>"]
     )
+    print("Finished pretokenization.")
     bpe = OptimizedBPE(pre_token_counts, vocab_size=10000, special_tokens=["<|endoftext|>"])
+    print("Finished initializing OptimizedBPE")
     bpe.train()
-    # serialize_vocab_and_merges(
-    #     bpe,
-    #     vocab_path="outputs/TinyStoriesV2-GPT4-train_vocab.json",
-    #     merge_path="outputs/TinyStoriesV2-GPT4-train_merges.json",
-    # )
+    print("Completed tokenization training")
+    serialize_vocab_and_merges(
+        bpe,
+        vocab_path="outputs/TinyStoriesV2-GPT4-train_vocab.json",
+        merge_path="outputs/TinyStoriesV2-GPT4-train_merges.json",
+    )
