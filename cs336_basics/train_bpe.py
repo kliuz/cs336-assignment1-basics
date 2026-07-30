@@ -73,13 +73,12 @@ def get_pre_token_counts_debug(text: str, special_tokens: list[str]) -> dict[tup
 def pre_tokenize(input_path: str, start: int, end: int, escaped_special_tokens) -> Counter:
     pat_str = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
-    subchunks: list[str] = []
     with open(input_path, "rb") as f:
         f.seek(start)
         chunk = f.read(end - start).decode("utf-8", errors="ignore")
-        subchunks = re.split("|".join(escaped_special_tokens), chunk)
+        subchunks: list[str] = re.split("|".join(escaped_special_tokens), chunk)
 
-    counter: Counter = Counter()
+    counter: Counter[str] = Counter()
     for subchunk in subchunks:
         for match in re.finditer(pat_str, subchunk):
             counter[match.group(0)] += 1
@@ -88,15 +87,15 @@ def pre_tokenize(input_path: str, start: int, end: int, escaped_special_tokens) 
 
 
 def get_pre_token_counts(input_path: str | os.PathLike, special_tokens: list[str]) -> dict[tuple[bytes, ...], int]:
-    pre_token_counts = Counter()
-    boundaries: list[int] = []
+    pre_token_counts: Counter[str] = Counter()
+    num_processes = 16
     with open(input_path, "rb") as f:
-        num_processes = 16
-        boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
+        # Make sure num_processes * chunk size can all fit into memory.
+        boundaries: list[int] = find_chunk_boundaries(f, 256, b"<|endoftext|>")
 
     # Parallelize by sending each start/end pair to a set of processes.
     escaped_special_tokens = [re.escape(token) for token in special_tokens]
-    with Pool(processes=16) as pool:
+    with Pool(processes=num_processes) as pool:
         arguments = [
             (input_path, start, end, escaped_special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:])
         ]
@@ -114,7 +113,6 @@ def get_pre_token_counts(input_path: str | os.PathLike, special_tokens: list[str
 
 class OptimizedBPE:
     def __init__(self, pre_token_counts: dict[tuple[bytes, ...], int], vocab_size: int, special_tokens: list[str]):
-        self.pre_token_counts = pre_token_counts
         self.vocab_size = vocab_size
         self.special_tokens = special_tokens
         self.vocab: dict[int, bytes] = {x: bytes([x]) for x in range(256)}
@@ -122,7 +120,7 @@ class OptimizedBPE:
             self.vocab[len(self.vocab)] = token.encode("utf-8")
         self.merges: list[tuple[bytes, bytes]] = []
         self.byte_pairs_to_nodes: dict[tuple[bytes, bytes], list[Node]] = self._get_byte_pairs_to_nodes(
-            self.pre_token_counts
+            pre_token_counts
         )
         self.byte_pairs_to_counts = self._get_byte_pairs_to_counts(self.byte_pairs_to_nodes)
         self.max_pq = self._get_byte_pairs_max_heap(self.byte_pairs_to_counts)
@@ -168,9 +166,28 @@ class OptimizedBPE:
         if next is not None:
             next.prev = node
         removed.next = None
+        removed.prev = None
         node.next = next
 
         return (node, removed, node.freq)
+    
+    def _purge_stale_nodes_from_list(self, nodes: list[Node]):
+        read_index = 0
+        write_index = 0
+        while read_index < len(nodes):
+            if nodes[read_index] is None or nodes[read_index].next is None:
+                read_index += 1
+            else:
+                nodes[write_index] = nodes[read_index]
+                read_index += 1
+                write_index += 1
+        del nodes[write_index:]
+
+    
+    def _rebuild_byte_pairs_to_nodes(self):
+        for byte_pair, nodes in self.byte_pairs_to_nodes.items():
+            self._purge_stale_nodes_from_list(nodes)
+
 
     def _print_node(self, node: Node) -> None:
         value = node.value
@@ -180,7 +197,12 @@ class OptimizedBPE:
         print("(prev, curr, next):", prev_value, value, next_value)
 
     def train(self) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+        iterations = 0
         while len(self.vocab) < self.vocab_size and len(self.max_pq) > 0:
+            iterations += 1
+            if iterations % 10000 == 0:
+                self._rebuild_byte_pairs_to_nodes()
+
             item: MaxHeapItem = heapq.heappop(self.max_pq)
             heap_count = item.count
             byte_pair = item.byte_pair
@@ -351,16 +373,23 @@ if __name__ == "__main__":
     # fuzz_implementations(alphabet="ab", text_len=8, vocab_size=257 + 4, special_tokens=["<|endoftext|>"])
 
     print("Starting BPE training!")
-    pre_token_counts = get_pre_token_counts(
-        input_path="data/TinyStoriesV2-GPT4-train.txt", special_tokens=["<|endoftext|>"]
+
+    bpe = OptimizedBPE(
+        get_pre_token_counts(input_path="data/owt_train.txt", special_tokens=["<|endoftext|>"]),
+        vocab_size=32000,
+        special_tokens=["<|endoftext|>"],
     )
-    print("Finished pretokenization.")
-    bpe = OptimizedBPE(pre_token_counts, vocab_size=10000, special_tokens=["<|endoftext|>"])
+    # bpe = OptimizedBPE(
+    #     get_pre_token_counts(input_path="data/TinyStoriesV2-GPT4-valid.txt", special_tokens=["<|endoftext|>"]),
+    #     vocab_size=10000,
+    #     special_tokens=["<|endoftext|>"],
+    # )
+
     print("Finished initializing OptimizedBPE")
     bpe.train()
     print("Completed tokenization training")
     serialize_vocab_and_merges(
         bpe,
-        vocab_path="outputs/TinyStoriesV2-GPT4-train_vocab.json",
-        merge_path="outputs/TinyStoriesV2-GPT4-train_merges.json",
+        vocab_path="outputs/owt_train_vocab.json",
+        merge_path="outputs/owt_train_merges.json",
     )
