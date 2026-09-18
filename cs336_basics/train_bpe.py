@@ -70,7 +70,7 @@ def get_pre_token_counts_debug(text: str, special_tokens: list[str]) -> dict[tup
     return bytes_counts
 
 
-def pre_tokenize(input_path: str, start: int, end: int, escaped_special_tokens) -> Counter:
+def pre_tokenize(input_path: str, start: int, end: int, escaped_special_tokens: str) -> Counter:
     pat_str = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
     with open(input_path, "rb") as f:
