@@ -14,6 +14,7 @@ class Tokenizer:
         self.vocab = vocab
         self.bytes_to_token_id: dict[bytes, int] = dict(zip(self.vocab.values(), self.vocab.keys()))
         self.merges = merges
+        self.merge_order: dict[tuple[bytes, bytes], int] = {merge: i for i, merge in enumerate(merges)}
         self.special_tokens = None if not special_tokens else sorted(special_tokens, key=len, reverse=True)
 
     @classmethod
@@ -35,6 +36,34 @@ class Tokenizer:
 
         return Tokenizer(vocab, merges, special_tokens)
 
+    def encode_pre_token(self, pre_token: list[bytes]) -> list[int]:
+        if len(pre_token) == 1:
+            return [self.bytes_to_token_id[pre_token[0]]]
+
+        merged_pre_token: list[bytes] = pre_token
+        while True:
+            earliest_merge: tuple[int, tuple[bytes, bytes]] | None = None
+            for i in range(len(merged_pre_token) - 1):
+                pair = (merged_pre_token[i], merged_pre_token[i + 1])
+                if pair in self.merge_order and (not earliest_merge or self.merge_order[pair] < earliest_merge[0]):
+                    earliest_merge = (self.merge_order[pair], pair)
+
+            if not earliest_merge:
+                break
+
+            i = 0
+            new_merged_pre_token: list[bytes] = []
+            while i < len(merged_pre_token):
+                if i + 1 < len(merged_pre_token) and (merged_pre_token[i], merged_pre_token[i + 1]) == earliest_merge[1]:
+                    new_merged_pre_token.append(merged_pre_token[i] + merged_pre_token[i + 1])
+                    i += 2
+                else:
+                    new_merged_pre_token.append(merged_pre_token[i])
+                    i += 1
+            merged_pre_token = new_merged_pre_token
+
+        return [self.bytes_to_token_id[b] for b in merged_pre_token]
+
     def encode(self, text: str) -> list[int]:
         pat_str = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
@@ -52,23 +81,9 @@ class Tokenizer:
             pre_tokens: list[list[bytes]] = [
                 [bytes([b]) for b in match.group(0).encode("utf-8")] for match in re.finditer(pat_str, chunk)
             ]
-            for merge in self.merges:
-                for i in range(len(pre_tokens)):
-                    pre_token = pre_tokens[i]
-                    new_pre_token = []
-                    k = 0
-                    while k < len(pre_token):
-                        if k + 1 < len(pre_token) and (pre_token[k], pre_token[k + 1]) == merge:
-                            new_pre_token.append(pre_token[k] + pre_token[k + 1])
-                            k += 2
-                        else:
-                            new_pre_token.append(pre_token[k])
-                            k += 1
-                    pre_tokens[i] = new_pre_token
-
             for pre_token in pre_tokens:
-                for b in pre_token:
-                    ids.append(self.bytes_to_token_id[b])
+                pre_token_ids = self.encode_pre_token(pre_token)
+                ids.extend(pre_token_ids)
 
         return ids
 
@@ -92,7 +107,7 @@ if __name__ == "__main__":
         merges_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_merges.json",
         special_tokens=["<|endoftext|>"],
     )
-    text = "Héllò hôw <|endoftext|><|endoftext|> are ü? 🙃<|endoftext|>"
+    text = "🙃"
     print("input text:", text)
     ids: list[int] = tokenizer.encode(text)
     print("token ids:", ids)
