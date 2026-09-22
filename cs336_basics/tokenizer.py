@@ -1,6 +1,7 @@
 import json
 from collections.abc import Iterable, Iterator
 
+import random
 import regex as re
 
 
@@ -54,7 +55,10 @@ class Tokenizer:
             i = 0
             new_merged_pre_token: list[bytes] = []
             while i < len(merged_pre_token):
-                if i + 1 < len(merged_pre_token) and (merged_pre_token[i], merged_pre_token[i + 1]) == earliest_merge[1]:
+                if (
+                    i + 1 < len(merged_pre_token)
+                    and (merged_pre_token[i], merged_pre_token[i + 1]) == earliest_merge[1]
+                ):
                     new_merged_pre_token.append(merged_pre_token[i] + merged_pre_token[i + 1])
                     i += 2
                 else:
@@ -101,16 +105,81 @@ class Tokenizer:
         return b"".join(tokens).decode(encoding="utf-8", errors="replace")
 
 
+def reservoir_sample(reservoir: list[bytes], size: int, sample: bytes, sample_num: int, random_generator: random.Random) -> None:
+    if len(reservoir) < size:
+        reservoir.append(sample)
+        return
+
+    # If the sample is not selected with probability (size / sample_num), return and update nothing.
+    if random_generator.random() >= (size / sample_num):
+        return
+
+    # Randomly choose which element of the reservoir to replace.
+    index = random_generator.randint(0, size - 1)
+    reservoir[index] = sample
+
+
+def sample_documents(corpus_path: str, num_samples: int, special_token: bytes, seed: int) -> list[bytes]:
+    chunk_size: int = 4096  # Read ahead by 4k bytes at a time.
+    reservoir: list[bytes] = []
+    random_generator = random.Random(seed)
+
+    with open(corpus_path, "rb") as f:
+        buffer: bytes = b""
+        document_num: int = 0
+        while True:
+            chunk = f.read(chunk_size)
+            if chunk == b"":
+                break
+            buffer += chunk
+
+            while (found_at := buffer.find(special_token)) != -1:
+                document = buffer[:found_at]
+                document_num += 1
+                reservoir_sample(reservoir, num_samples, document, document_num, random_generator)
+
+                next_index = found_at + len(special_token)
+                buffer = buffer[next_index:]
+
+    return reservoir
+
+
 if __name__ == "__main__":
-    tokenizer = Tokenizer.from_files(
+    tinystories_documents: list[bytes] = sample_documents(
+        corpus_path="/home/kliuz/home/cs336-assignment1-basics/data/TinyStoriesV2-GPT4-train.txt",
+        num_samples=10,
+        special_token=b"<|endoftext|>",
+        seed=101,
+    )
+    tinystories_tokenizer = Tokenizer.from_files(
         vocab_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_vocab.json",
         merges_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_merges.json",
         special_tokens=["<|endoftext|>"],
     )
-    text = "🙃"
-    print("input text:", text)
-    ids: list[int] = tokenizer.encode(text)
-    print("token ids:", ids)
-    new_text = tokenizer.decode(ids)
-    print("recovered text:", new_text)
-    print("equal?", text == new_text)
+    owt_documents: list[bytes] = sample_documents(
+        corpus_path="/home/kliuz/home/cs336-assignment1-basics/data/owt_train.txt",
+        num_samples=10,
+        special_token=b"<|endoftext|>",
+        seed=101,
+    )
+    owt_tokenizer = Tokenizer.from_files(
+        vocab_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/owt_train_vocab.json",
+        merges_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/owt_train_merges.json",
+        special_tokens=["<|endoftext|>"],
+    )
+
+    tinystories_sample_bytes: int = sum(len(doc) for doc in tinystories_documents)
+    print("tinystories total raw bytes:", tinystories_sample_bytes)
+    owt_sample_bytes: int = sum(len(doc) for doc in owt_documents)
+    print("owt total raw bytes:", owt_sample_bytes)
+
+    tinystories_tokenized_documents: list[list[int]] = [tinystories_tokenizer.encode(doc.decode("utf-8")) for doc in tinystories_documents]
+    tinystories_tokenized_bytes: int = sum(len(doc) for doc in tinystories_tokenized_documents)
+    print("tinystories total tokenized bytes:", tinystories_tokenized_bytes)
+    owt_tokenized_documents: list[list[int]] = [owt_tokenizer.encode(doc.decode("utf-8")) for doc in owt_documents]
+    owt_tokenized_bytes: int = sum(len(doc) for doc in owt_tokenized_documents)
+    print("owt total tokenized bytes:", owt_tokenized_bytes)
+
+    print("tinystories compression ratio (bytes / token):", tinystories_sample_bytes / tinystories_tokenized_bytes)
+    print("owt compression ratio (bytes / token):", owt_sample_bytes / owt_tokenized_bytes)
+
