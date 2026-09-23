@@ -145,20 +145,20 @@ def sample_documents(corpus_path: str, num_samples: int, special_token: bytes, s
 
 
 if __name__ == "__main__":
-    tinystories_documents: list[bytes] = sample_documents(
-        corpus_path="/home/kliuz/home/cs336-assignment1-basics/data/TinyStoriesV2-GPT4-train.txt",
-        num_samples=10,
-        special_token=b"<|endoftext|>",
-        seed=101,
-    )
-    tinystories_tokenizer = Tokenizer.from_files(
-        vocab_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_vocab.json",
-        merges_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_merges.json",
-        special_tokens=["<|endoftext|>"],
-    )
+    # tinystories_documents: list[bytes] = sample_documents(
+    #     corpus_path="/home/kliuz/home/cs336-assignment1-basics/data/TinyStoriesV2-GPT4-train.txt",
+    #     num_samples=10,
+    #     special_token=b"<|endoftext|>",
+    #     seed=101,
+    # )
+    # tinystories_tokenizer = Tokenizer.from_files(
+    #     vocab_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_vocab.json",
+    #     merges_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_merges.json",
+    #     special_tokens=["<|endoftext|>"],
+    # )
     owt_documents: list[bytes] = sample_documents(
-        corpus_path="/home/kliuz/home/cs336-assignment1-basics/data/owt_train.txt",
-        num_samples=10,
+        corpus_path="/home/kliuz/home/cs336-assignment1-basics/data/owt_valid.txt",
+        num_samples=10000,
         special_token=b"<|endoftext|>",
         seed=101,
     )
@@ -168,18 +168,22 @@ if __name__ == "__main__":
         special_tokens=["<|endoftext|>"],
     )
 
-    tinystories_sample_bytes: int = sum(len(doc) for doc in tinystories_documents)
-    print("tinystories total raw bytes:", tinystories_sample_bytes)
+    # tinystories_sample_bytes: int = sum(len(doc) for doc in tinystories_documents)
+    # print("tinystories total raw bytes:", tinystories_sample_bytes)
     owt_sample_bytes: int = sum(len(doc) for doc in owt_documents)
     print("owt total raw bytes:", owt_sample_bytes)
 
-    tinystories_tokenized_documents: list[list[int]] = [tinystories_tokenizer.encode(doc.decode("utf-8")) for doc in tinystories_documents]
-    tinystories_tokenized_bytes: int = sum(len(doc) for doc in tinystories_tokenized_documents)
-    print("tinystories total tokenized bytes:", tinystories_tokenized_bytes)
+    # tinystories_tokenized_documents: list[list[int]] = [tinystories_tokenizer.encode(doc.decode("utf-8")) for doc in tinystories_documents]
+    # tinystories_tokenized_bytes: int = sum(len(doc) for doc in tinystories_tokenized_documents)
+    # print("tinystories total tokenized bytes:", tinystories_tokenized_bytes)
+    from datetime import datetime
+    start = datetime.now()
     owt_tokenized_documents: list[list[int]] = [owt_tokenizer.encode(doc.decode("utf-8")) for doc in owt_documents]
+    end = datetime.now()
     owt_tokenized_bytes: int = sum(len(doc) for doc in owt_tokenized_documents)
     print("owt total tokenized bytes:", owt_tokenized_bytes)
 
-    print("tinystories compression ratio (bytes / token):", tinystories_sample_bytes / tinystories_tokenized_bytes)
+    # print("tinystories compression ratio (bytes / token):", tinystories_sample_bytes / tinystories_tokenized_bytes)
     print("owt compression ratio (bytes / token):", owt_sample_bytes / owt_tokenized_bytes)
+    print("owt tokenization throughput (bytes / s):", owt_tokenized_bytes / (end - start).seconds)
 
