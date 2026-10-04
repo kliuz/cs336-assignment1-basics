@@ -1,6 +1,9 @@
 import json
 from collections.abc import Iterable, Iterator
+from datetime import datetime
+from cs336_basics.pretokenization_example import find_chunk_boundaries
 
+import numpy as np
 import random
 import regex as re
 
@@ -105,7 +108,9 @@ class Tokenizer:
         return b"".join(tokens).decode(encoding="utf-8", errors="replace")
 
 
-def reservoir_sample(reservoir: list[bytes], size: int, sample: bytes, sample_num: int, random_generator: random.Random) -> None:
+def reservoir_sample(
+    reservoir: list[bytes], size: int, sample: bytes, sample_num: int, random_generator: random.Random
+) -> None:
     if len(reservoir) < size:
         reservoir.append(sample)
         return
@@ -145,22 +150,10 @@ def sample_documents(corpus_path: str, num_samples: int, special_token: bytes, s
 
 
 if __name__ == "__main__":
-    # tinystories_documents: list[bytes] = sample_documents(
-    #     corpus_path="/home/kliuz/home/cs336-assignment1-basics/data/TinyStoriesV2-GPT4-train.txt",
-    #     num_samples=10,
-    #     special_token=b"<|endoftext|>",
-    #     seed=101,
-    # )
-    # tinystories_tokenizer = Tokenizer.from_files(
-    #     vocab_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_vocab.json",
-    #     merges_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_merges.json",
-    #     special_tokens=["<|endoftext|>"],
-    # )
-    owt_documents: list[bytes] = sample_documents(
-        corpus_path="/home/kliuz/home/cs336-assignment1-basics/data/owt_valid.txt",
-        num_samples=10000,
-        special_token=b"<|endoftext|>",
-        seed=101,
+    tinystories_tokenizer = Tokenizer.from_files(
+        vocab_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_vocab.json",
+        merges_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_merges.json",
+        special_tokens=["<|endoftext|>"],
     )
     owt_tokenizer = Tokenizer.from_files(
         vocab_filepath="/home/kliuz/home/cs336-assignment1-basics/outputs/owt_train_vocab.json",
@@ -168,22 +161,40 @@ if __name__ == "__main__":
         special_tokens=["<|endoftext|>"],
     )
 
-    # tinystories_sample_bytes: int = sum(len(doc) for doc in tinystories_documents)
-    # print("tinystories total raw bytes:", tinystories_sample_bytes)
-    owt_sample_bytes: int = sum(len(doc) for doc in owt_documents)
-    print("owt total raw bytes:", owt_sample_bytes)
+    datasets = [
+        (
+            "TinyStories training",
+            "/home/kliuz/home/cs336-assignment1-basics/data/TinyStoriesV2-GPT4-train.txt",
+            "/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-train_tokenized.txt",
+        ),
+        (
+            "TinyStories validation",
+            "/home/kliuz/home/cs336-assignment1-basics/data/TinyStoriesV2-GPT4-valid.txt",
+            "/home/kliuz/home/cs336-assignment1-basics/outputs/TinyStoriesV2-GPT4-valid_tokenized.txt",
+        ),
+        (
+            "OWT training",
+            "/home/kliuz/home/cs336-assignment1-basics/data/owt_train.txt",
+            "/home/kliuz/home/cs336-assignment1-basics/outputs/owt_train_tokenized.txt",
+        ),
+        (
+            "OWT validation",
+            "/home/kliuz/home/cs336-assignment1-basics/data/owt_valid.txt",
+            "/home/kliuz/home/cs336-assignment1-basics/outputs/owt_valid_tokenized.txt",
+        ),
+    ]
 
-    # tinystories_tokenized_documents: list[list[int]] = [tinystories_tokenizer.encode(doc.decode("utf-8")) for doc in tinystories_documents]
-    # tinystories_tokenized_bytes: int = sum(len(doc) for doc in tinystories_tokenized_documents)
-    # print("tinystories total tokenized bytes:", tinystories_tokenized_bytes)
-    from datetime import datetime
-    start = datetime.now()
-    owt_tokenized_documents: list[list[int]] = [owt_tokenizer.encode(doc.decode("utf-8")) for doc in owt_documents]
-    end = datetime.now()
-    owt_tokenized_bytes: int = sum(len(doc) for doc in owt_tokenized_documents)
-    print("owt total tokenized bytes:", owt_tokenized_bytes)
-
-    # print("tinystories compression ratio (bytes / token):", tinystories_sample_bytes / tinystories_tokenized_bytes)
-    print("owt compression ratio (bytes / token):", owt_sample_bytes / owt_tokenized_bytes)
-    print("owt tokenization throughput (bytes / s):", owt_tokenized_bytes / (end - start).seconds)
-
+    for name, input_path, output_path in datasets:
+        print(f"Tokenizing the {name} dataset.")
+        with (
+            open(input_path, "rb") as input,
+            open(output_path, "wb") as output,
+        ):
+            boundaries = find_chunk_boundaries(file=input, desired_num_chunks=256, split_special_token=b"<|endoftext|>")
+            for start, end in zip(boundaries[:-1], boundaries[1:]):
+                input.seek(start)
+                text: str = input.read(end - start).decode("utf-8")
+                tokenizer = tinystories_tokenizer if "TinyStories" in name else owt_tokenizer
+                ids = tokenizer.encode(text)
+                serialized_bytes = np.array(ids, dtype=np.uint16).tobytes()
+                output.write(serialized_bytes)
